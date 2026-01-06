@@ -1,0 +1,283 @@
+package com.compose_architecture_latest
+
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.colorResource
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.compose.rememberNavController
+import com.etihad.myb.core.MYBSharedViewModel
+import com.etihad.myb.core.MYBSharedViewState
+import com.etihad.myb.core.navigation.MYBFeatureEntry
+import com.etihad.myb.core.navigation.MYBRoutes
+import com.etihad.myb.core.priority_access.data.remote.model.Flags
+import com.etihad.myb.core.priority_access.data.remote.model.MYBCatalogueRequestDto
+import com.ey.common.constants.BundleArgumentKeys
+import com.ey.common.constants.EyConstants.BOOKING_ROUTE
+import com.ey.common.constants.EyConstants.MYB_ROUTE
+import com.ey.model.feature.myb.TripToMYBNavigationData
+import com.ey.model.feature.search.SearchData
+import com.ey.model.feature.search.recent_search.NewOrigins
+import com.ey.model.feature.search.recent_search.PopularAndNewDestinations
+import com.google.accompanist.navigation.animation.AnimatedNavHost
+import com.mttnow.android.booking.BookingSharedViewModel
+import com.mttnow.android.booking.navigation.BookingFeatureEntry
+import com.mttnow.android.booking.navigation.BookingRoutes
+import com.mttnow.android.ey_compose_navigation.FeatureEntry
+import com.mttnow.android.ey_compose_navigation.LocalAppNavigator
+import dagger.hilt.android.AndroidEntryPoint
+import ey.material.components.presentation.molecule.EYComposeToolbar
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+@AndroidEntryPoint
+class ComposeMainActivity : ComponentActivity() {
+
+    @Inject
+    lateinit var featureMap: Map<String, @JvmSuppressWildcards FeatureEntry>
+    private val mainViewModel: EyComposeMainViewModel by viewModels()
+
+    @OptIn(ExperimentalAnimationApi::class)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        // Decide start route based on intent (fallback = Booking root)
+        val initialRouteFromIntent = intent.getStringExtra("navigate_to") ?: BookingRoutes.ROOT
+
+        val tripToMYBData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra("trip_data", TripToMYBNavigationData::class.java) ?: TripToMYBNavigationData()
+        } else {
+            intent.getParcelableExtra("trip_data") as TripToMYBNavigationData? ?: TripToMYBNavigationData()
+        }
+
+        val initialRoot = when {
+            initialRouteFromIntent.contains(BOOKING_ROUTE) -> BookingRoutes.ROOT
+            initialRouteFromIntent.contains(MYB_ROUTE) -> MYBRoutes.ROOT
+            // add other feature roots here…
+            else -> BookingRoutes.ROOT // default screen if no match
+        }
+
+        setContent {
+            val navController = rememberNavController()
+            val entries = remember(featureMap) { featureMap.values.toList().sortedBy { it.root } }
+            val toolbarTitle = remember { mutableStateOf("") }
+            val toolbarSubTitle = remember { mutableStateOf("") }
+            val isToolbarSecondaryIconVisible = remember { mutableStateOf(false) }
+            val toolbarSecondaryIconId = remember { mutableIntStateOf(0) }
+            val isToolbarSubTitleVisible = remember { mutableStateOf(false) }
+            val toolbarCustomSubtitle = remember { mutableStateOf<(@Composable () -> Unit)?>(null) }
+            val isToolbarCabinTypeMaterialBarVisible = remember { mutableStateOf(false) }
+            val isToolbarPrimaryIconVisible = remember { mutableStateOf(false) }
+            // Provide AppNavigator so any composable can use LocalAppNavigator.current
+            CompositionLocalProvider(
+                LocalAppNavigator provides AppNavigatorImpl(navController)
+            ) {
+                Scaffold(
+                    topBar = {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .wrapContentHeight()
+                                .background(colorResource(id = R.color.home_background_color))
+                                .statusBarsPadding()
+                        ) {
+                            EYComposeToolbar(
+                                isIconVisible = isToolbarPrimaryIconVisible.value,
+                                iconId = R.drawable.myb_ic_cart,
+                                title = toolbarTitle.value,
+                                isBackButtonEnabled = true,
+                                backgroundColor = android.R.color.transparent,
+                                onBackButtonClick = {
+                                    if (navController.currentBackStackEntry?.destination?.route == MYBRoutes.MYBScreens.MYB_LANDING.route) {
+                                        finish()
+                                    } else {
+                                        // Check if there is a back stack to pop
+                                        if (navController.previousBackStackEntry != null) {
+                                            navController.popBackStack()
+                                        } else {
+                                            // If there's no back stack, finish the activity
+                                            finish()
+                                        }
+                                    }
+                                },
+                                onActionClick = { mainViewModel.onActionButtonClicked(true) },
+                                subTitle = toolbarSubTitle.value,
+                                isSubTitleVisible = isToolbarSubTitleVisible.value,
+                                isSecondaryIconVisible = isToolbarSecondaryIconVisible.value,
+                                secondaryIconId = toolbarSecondaryIconId.intValue,
+                                customSubtitle = toolbarCustomSubtitle.value,
+                                isCabinTypeMaterialBarVisible = isToolbarCabinTypeMaterialBarVisible.value,
+
+                                )
+                        }
+                    }
+                ) { innerPadding ->
+                    AnimatedNavHost(
+                        navController = navController,
+                        startDestination = initialRoot,
+                        modifier = Modifier.padding(innerPadding),
+                        enterTransition = {
+                            slideInHorizontally(
+                                initialOffsetX = { it },
+                                animationSpec = tween(durationMillis = 300)
+                            ) + fadeIn(animationSpec = tween(durationMillis = 300))
+                        },
+                        exitTransition = {
+                            slideOutHorizontally(
+                                targetOffsetX = { -it / 3 },
+                                animationSpec = tween(durationMillis = 250)
+                            ) + fadeOut(animationSpec = tween(durationMillis = 250))
+                        },
+                        popEnterTransition = {
+                            slideInHorizontally(
+                                initialOffsetX = { -it / 3 },
+                                animationSpec = tween(durationMillis = 250)
+                            ) + fadeIn(animationSpec = tween(durationMillis = 250))
+                        },
+                        popExitTransition = {
+                            slideOutHorizontally(
+                                targetOffsetX = { it },
+                                animationSpec = tween(durationMillis = 300)
+                            ) + fadeOut(animationSpec = tween(durationMillis = 300))
+                        }
+                    ) {
+                        entries.forEach { entry ->
+                            when (entry) {
+                                is BookingFeatureEntry -> {
+                                    val bookingSharedViewModel: BookingSharedViewModel by viewModels()
+                                    val searchData = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                        intent?.getSerializableExtra("search_data", SearchData::class.java)
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        intent?.getSerializableExtra("search_data") as? SearchData
+                                    }
+                                    if (bookingSharedViewModel.viewState.value.searchData == null) {
+                                        bookingSharedViewModel.updateSearchData(searchData)
+                                    }
+                                    val extras = intent.extras
+                                    val newOriginAirportValues = extras?.getParcelable<NewOrigins>(
+                                        BundleArgumentKeys.NEW_ORIGINS_AIRPORTS.value
+                                    )
+                                    val popularAndNewDestinationsValue = extras?.getParcelable<PopularAndNewDestinations>(
+                                        BundleArgumentKeys.POPULAR_AND_NEW_DESTINATIONS.value
+                                    )
+
+                                    entry.register(
+                                        navGraphBuilder = this,
+                                        navController = navController,
+                                        onUpdateToolbarState = { title, subTitle, isSubtitleVisible,
+                                                                 isSecondaryIconVisible, secondaryIconId,
+                                                                 isCabinTypeBarVisible, customSubtitle ->
+                                            toolbarTitle.value = title.orEmpty()
+                                            toolbarSubTitle.value = subTitle.orEmpty()
+                                            isToolbarSubTitleVisible.value = isSubtitleVisible == true
+                                            isToolbarSecondaryIconVisible.value = isSecondaryIconVisible == true
+                                            if (secondaryIconId != null) {
+                                                toolbarSecondaryIconId.intValue = secondaryIconId
+                                            }
+                                            isToolbarCabinTypeMaterialBarVisible.value = isCabinTypeBarVisible == true
+                                            toolbarCustomSubtitle.value = customSubtitle
+                                            isToolbarPrimaryIconVisible.value = true
+                                        },
+                                        searchData = searchData,
+                                        bookingSharedViewModel = bookingSharedViewModel,
+                                        newOriginAirportValues = newOriginAirportValues,
+                                        popularAndNewDestinationsValue = popularAndNewDestinationsValue
+                                    )
+                                }
+
+                                is MYBFeatureEntry -> {
+                                    val mybSharedViewModel: MYBSharedViewModel by viewModels()
+                                    lifecycleScope.launch {
+                                        mainViewModel.actionButtonClickedEvent.collect { isClicked ->
+                                            if (isClicked) {
+                                                mybSharedViewModel.onViewStateUpdated(
+                                                    MYBSharedViewState(
+                                                        isCartClicked = true
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    mybSharedViewModel.onViewStateUpdated(
+                                        MYBSharedViewState(
+                                            mybCatalogueRequestDto = MYBCatalogueRequestDto(
+                                                lastName = tripToMYBData.lastName,
+                                                orderId = tripToMYBData.pnr,
+                                                officeId = tripToMYBData.officeId,
+                                                flags = Flags(
+                                                    enableBrandedFares = true,
+                                                    enableStaffLoungeComplimentary = true
+                                                )
+                                            )
+                                        )
+                                    )
+                                    entry.register(
+                                        navGraphBuilder = this,
+                                        navController = navController,
+                                        startDestinationCategory = if (initialRoot == MYBRoutes.ROOT) tripToMYBData.category else null,
+                                        mybSharedViewModel = mybSharedViewModel,
+                                        onUpdateToolbarState = { title, subTitle, isSubtitleVisible, isSecondaryIconVisible, secondaryIconId,
+                                                                 isPrimaryIconVisible ->
+                                            toolbarTitle.value = title.orEmpty()
+                                            toolbarSubTitle.value = subTitle.orEmpty()
+                                            isToolbarSubTitleVisible.value = isSubtitleVisible == true
+                                            isToolbarSecondaryIconVisible.value = isSecondaryIconVisible == true
+                                            if (secondaryIconId != null) {
+                                                toolbarSecondaryIconId.intValue = secondaryIconId
+                                            }
+                                            isToolbarPrimaryIconVisible.value = isPrimaryIconVisible == true
+                                        }
+                                    )
+                                }
+
+                                else -> entry.register(
+                                    navGraphBuilder = this,
+                                    navController = navController,
+                                    onUpdateToolbarTitle = { toolbarTitle.value = it }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If intent asked for a deeper route than the root, navigate after graph is built
+//            LaunchedEffect(initialRouteFromIntent, initialRoot) {
+//                if (initialRouteFromIntent != initialRoot) {
+//                    navController.navigate(initialRouteFromIntent) {
+//                        popUpTo(initialRoot) { inclusive = true }
+//                        launchSingleTop = true
+//                        restoreState = true
+//                    }
+//                }
+//            }
+        }
+        WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = false
+    }
+}
