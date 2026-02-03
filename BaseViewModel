@@ -1,0 +1,142 @@
+package com.ey.base
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.ey.common.EYDateUtils.getCurrentTimeInMillis
+import com.ey.common.sharedpreferences.SharedPreferencesUtils
+import com.ey.model.api.Resource
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+
+open class EyBaseViewModel : ViewModel() {
+
+    // MutableStateFlow property for managing resource states
+    private val _resource = MutableStateFlow<Resource<Any>?>(null)
+    val resource: StateFlow<Resource<Any>?> get() = _resource
+
+    // CoroutineExceptionHandler to handle exceptions in coroutines
+    private val coroutineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        handleError(throwable)
+    }
+
+    // Set resource state to loading
+    fun setLoading() {
+        _resource.value = Resource.Loading()
+    }
+
+    // Set resource state to success
+    fun setSuccess(data: Any) {
+        _resource.value = Resource.Success(data)
+    }
+
+    // Handle errors
+    protected fun handleError(throwable: Throwable) {
+        _resource.value = Resource.Error(throwable.message ?: "Unknown error")
+    }
+
+    // Launch a coroutine with exception handling
+    fun launchWithHandler(block: suspend () -> Unit) {
+        viewModelScope.launch(coroutineExceptionHandler) {
+            try {
+                setLoading()
+                block()
+            } catch (e: Exception) {
+                handleError(e)
+            }
+        }
+    }
+
+    // Launch a coroutine with exception handling and return the Job
+    fun launchWithHandlerJob(block: suspend () -> Unit): Job {
+        return viewModelScope.launch(coroutineExceptionHandler) {
+            try {
+                setLoading()
+                block()
+            } catch (e: Exception) {
+                handleError(e)
+            }
+        }
+    }
+
+    /**
+     * Launches a coroutine to fetch data and updates the resourceFlow state.
+     *
+     * @param dataFetcher Function to fetch data, returning null if no data.
+     * @param resourceFlow StateFlow to track the status of the data fetching.
+     */
+    fun <T> launchStateFlowHandler(
+        dataFetcher: suspend () -> T?,
+        resourceFlow: MutableStateFlow<Resource<T>?>
+    ) {
+        viewModelScope.launch {
+            resourceFlow.value = Resource.Loading()
+            try {
+                val data = dataFetcher()
+                resourceFlow.value = if (data != null) Resource.Success(data) else Resource.Error("No data found")
+            } catch (e: Exception) {
+                resourceFlow.value = Resource.Error(e.message ?: "An error occurred")
+            }
+        }
+    }
+
+    /**
+     * Launches a coroutine to collect data from a flow and updates the resourceFlow state.
+     *
+     * @param flowProvider Function to provide a Flow of resource states.
+     * @param resourceFlow StateFlow to track the status of the flow collection.
+     */
+    fun <T> launchFlowHandler(
+        flowProvider: suspend () -> Flow<Resource<T>>,
+        resourceFlow: MutableStateFlow<Resource<T>?>
+    ) {
+        viewModelScope.launch {
+            resourceFlow.value = Resource.Loading()
+            try {
+                // Collect the flow from the provided flowProvider
+                flowProvider().collect { resource ->
+                    resourceFlow.value = resource
+                }
+            } catch (e: Exception) {
+                // Handle exceptions that occur during flow collection
+                resourceFlow.value = Resource.Error(e.message ?: "An error occurred")
+            }
+        }
+    }
+
+    fun <T> resetStateFlow(stateFlow: MutableSharedFlow<T>, defaultValue: T) {
+        viewModelScope.launch {
+            stateFlow.emit(defaultValue)
+        }
+    }
+
+    /**
+     * Save the last updated time to SharedPreferences.
+     *
+     * @param sharedPreferencesUtils Instance of SharedPreferencesUtils.
+     * @param dateAndTimeKey Key to save the last updated date and time.
+     * @param lastUpdateDateAndTime Last updated date and time.
+     * @param timeKey Key to save the last updated time in milliseconds.
+     */
+    fun saveLastUpdatedProfileTimeToPref(
+        sharedPreferencesUtils: SharedPreferencesUtils,
+        dateAndTimeKey: String,
+        lastUpdateDateAndTime: String,
+        timeKey: String
+    ) {
+        sharedPreferencesUtils.saveStringToPreferences(
+            dateAndTimeKey,
+            lastUpdateDateAndTime
+        )
+        sharedPreferencesUtils.saveLongToPreferences(
+            timeKey,
+            getCurrentTimeInMillis()
+        )
+    }
+
+    open fun onViewStateUpdated(viewState: EyBaseViewState) {}
+}
